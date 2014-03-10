@@ -1,0 +1,147 @@
+ public class EventToCommandExtension : MarkupExtension
+    {
+        #region constructors
+
+        public EventToCommandExtension()
+        {
+        }
+
+        public EventToCommandExtension(string cmd)
+        {
+            this.Command = cmd;
+        }
+
+        public EventToCommandExtension(string cmd, object param)
+        {
+            this.Command = cmd;
+            this.CommandParameter = param;
+        }
+
+        #endregion
+
+        #region Command property
+
+        /// <summary>
+        /// contains the propertyname of command that should be called
+        /// </summary>
+        [ConstructorArgument("cmd")]
+        public string Command { get; set; }
+
+        [ConstructorArgument("param")]
+        public object CommandParameter { get; set; }
+
+        #endregion
+
+        public override object ProvideValue(IServiceProvider serviceProvider)
+        {
+            var target = (IProvideValueTarget)serviceProvider.GetService(typeof(IProvideValueTarget));
+
+            var targetObj = target.TargetObject as DependencyObject;
+            if (targetObj == null)
+                throw new InvalidOperationException("The target object must be a DependencyObject");
+
+            var memberInfo = target.TargetProperty as MemberInfo;
+
+            return CreateHandler(memberInfo, targetObj, Command, CommandParameter);
+        }
+
+        #region Helper methods
+
+        private object CreateHandler(MemberInfo memberinfo, DependencyObject target, string cmdname, object commandParameter)
+        {
+            Type eventHandlerType = null;
+
+            if (memberinfo is EventInfo)
+            {
+                EventInfo eventInfo = (EventInfo)memberinfo;
+                eventHandlerType = eventInfo.EventHandlerType;
+            }
+            else if (memberinfo is MethodInfo)
+            {
+                MethodInfo methodInfo = (MethodInfo)memberinfo;
+                eventHandlerType = methodInfo.GetParameters()[1].ParameterType;
+            }
+
+            if (eventHandlerType != null)
+            {
+                var handlerinfo = eventHandlerType.GetMethod("Invoke");
+                DynamicMethod method = null;
+                //if (commandParameter != null)
+                //{
+                //    method = new DynamicMethod("", handlerinfo.ReturnType, new Type[] { handlerinfo.GetParameters()[0].ParameterType, handlerinfo.GetParameters()[1].ParameterType });
+
+                //}
+                //else
+                method = new DynamicMethod("", handlerinfo.ReturnType, new Type[] { handlerinfo.GetParameters()[0].ParameterType, handlerinfo.GetParameters()[1].ParameterType });
+                var gen = method.GetILGenerator();
+
+                // emit IL for the event handler that calls HandlerIntern
+                // see Handler()
+                gen.Emit(OpCodes.Ldarg, 0);
+                gen.Emit(OpCodes.Ldarg, 1);
+
+
+                gen.Emit(OpCodes.Ldstr, cmdname);
+                //if (commandParameter != null)
+                //{
+                //    gen.Emit(OpCodes.Stobj, commandParameter.GetType());
+                //}
+                if (commandParameter != null)
+                {
+                //   var s = this.GetType().GetField("CommandParameter");
+                 // var ss=  this.GetType().GetProperty("CommandParameter").GetValue(this);
+                }
+                gen.Emit(OpCodes.Call, this.GetType().GetMethod("HandlerIntern"));
+                gen.Emit(OpCodes.Ret);
+                //if (commandParameter != null)
+                //{
+                //    return method.CreateDelegate(typeof(SomeDelegateType));
+
+                //}
+                return method.CreateDelegate(eventHandlerType);
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// this is the method we generate the above IL for
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="args"></param>
+        private static void Handler(object sender, object args)
+        {
+            HandlerIntern(sender, args, "<CommandName>", "<asd>");
+        }
+
+        public static void HandlerIntern(object sender, object args, string cmdname, object cmdParams)
+        {
+            var fe = sender as FrameworkElement;
+            if (fe != null)
+            {
+                var vm = fe.DataContext;
+                if (vm != null)
+                {
+                    var type = vm.GetType();
+                    var prop = type.GetProperty(cmdname);
+                    if (prop != null)
+                    {
+                        var cmd = prop.GetValue(vm) as ICommand;
+                        if ((cmd != null) && cmd.CanExecute(args))
+                        {
+                            cmd.Execute(args);
+                        }
+                    }
+                    else
+                    {
+                        MethodInfo methodInfo = type.GetMethod(cmdname, BindingFlags.Public | BindingFlags.Instance);
+                        if (methodInfo != null)
+                        {
+                            methodInfo.Invoke(vm, new[] { sender, args });
+                        }
+                    }
+                }
+            }
+        }
+        #endregion
+    }
