@@ -1,147 +1,88 @@
- public class EventToCommandExtension : MarkupExtension
+  /// <summary>
+    /// Расширение разметки для событий и команд
+    /// </summary>
+    [MarkupExtensionReturnType(typeof(RoutedEventHandler))]
+    public class EventHandlerExtension : MarkupExtension
     {
-        #region constructors
-
-        public EventToCommandExtension()
-        {
-        }
-
-        public EventToCommandExtension(string cmd)
-        {
-            this.Command = cmd;
-        }
-
-        public EventToCommandExtension(string cmd, object param)
-        {
-            this.Command = cmd;
-            this.CommandParameter = param;
-        }
-
-        #endregion
-
-        #region Command property
+       Type _eventArgsType;
 
         /// <summary>
-        /// contains the propertyname of command that should be called
+        /// Путь к команде
         /// </summary>
-        [ConstructorArgument("cmd")]
-        public string Command { get; set; }
+        public string BindingCommandPath { get; set; }
 
-        [ConstructorArgument("param")]
-        public object CommandParameter { get; set; }
+        /// <summary>
+        /// Команда
+        /// </summary>
+        public ICommand Command { get; set; }
 
-        #endregion
+        public EventHandlerExtension() { }
 
-        public override object ProvideValue(IServiceProvider serviceProvider)
+        public EventHandlerExtension(string bindingCommandPath)
         {
-            var target = (IProvideValueTarget)serviceProvider.GetService(typeof(IProvideValueTarget));
-
-            var targetObj = target.TargetObject as DependencyObject;
-            if (targetObj == null)
-                throw new InvalidOperationException("The target object must be a DependencyObject");
-
-            var memberInfo = target.TargetProperty as MemberInfo;
-
-            return CreateHandler(memberInfo, targetObj, Command, CommandParameter);
+            BindingCommandPath = bindingCommandPath;
         }
 
-        #region Helper methods
-
-        private object CreateHandler(MemberInfo memberinfo, DependencyObject target, string cmdname, object commandParameter)
+        public override object ProvideValue(IServiceProvider sp)
         {
-            Type eventHandlerType = null;
-
-            if (memberinfo is EventInfo)
+            var pvt = sp.GetService(typeof(IProvideValueTarget)) as IProvideValueTarget;
+            if (pvt != null)
             {
-                EventInfo eventInfo = (EventInfo)memberinfo;
-                eventHandlerType = eventInfo.EventHandlerType;
-            }
-            else if (memberinfo is MethodInfo)
-            {
-                MethodInfo methodInfo = (MethodInfo)memberinfo;
-                eventHandlerType = methodInfo.GetParameters()[1].ParameterType;
-            }
-
-            if (eventHandlerType != null)
-            {
-                var handlerinfo = eventHandlerType.GetMethod("Invoke");
-                DynamicMethod method = null;
-                //if (commandParameter != null)
-                //{
-                //    method = new DynamicMethod("", handlerinfo.ReturnType, new Type[] { handlerinfo.GetParameters()[0].ParameterType, handlerinfo.GetParameters()[1].ParameterType });
-
-                //}
-                //else
-                method = new DynamicMethod("", handlerinfo.ReturnType, new Type[] { handlerinfo.GetParameters()[0].ParameterType, handlerinfo.GetParameters()[1].ParameterType });
-                var gen = method.GetILGenerator();
-
-                // emit IL for the event handler that calls HandlerIntern
-                // see Handler()
-                gen.Emit(OpCodes.Ldarg, 0);
-                gen.Emit(OpCodes.Ldarg, 1);
-
-
-                gen.Emit(OpCodes.Ldstr, cmdname);
-                //if (commandParameter != null)
-                //{
-                //    gen.Emit(OpCodes.Stobj, commandParameter.GetType());
-                //}
-                if (commandParameter != null)
+                var evt = pvt.TargetProperty as EventInfo;
+                var doAction = GetType().GetMethod("DoAction", BindingFlags.NonPublic | BindingFlags.Instance);
+                Type dlgType = null;
+                if (evt != null)
                 {
-                //   var s = this.GetType().GetField("CommandParameter");
-                 // var ss=  this.GetType().GetProperty("CommandParameter").GetValue(this);
+                    dlgType = evt.EventHandlerType;
                 }
-                gen.Emit(OpCodes.Call, this.GetType().GetMethod("HandlerIntern"));
-                gen.Emit(OpCodes.Ret);
-                //if (commandParameter != null)
-                //{
-                //    return method.CreateDelegate(typeof(SomeDelegateType));
-
-                //}
-                return method.CreateDelegate(eventHandlerType);
+                var mi = pvt.TargetProperty as MethodInfo;
+                if (mi != null)
+                {
+                    dlgType = mi.GetParameters()[1].ParameterType;
+                }
+                if (dlgType != null)
+                {
+                    _eventArgsType = dlgType.GetMethod("Invoke").GetParameters()[1].ParameterType;
+                    return Delegate.CreateDelegate(dlgType, this, doAction);
+                }
             }
-
             return null;
         }
 
         /// <summary>
-        /// this is the method we generate the above IL for
+        /// Метод привязывающийся к событию
         /// </summary>
         /// <param name="sender"></param>
-        /// <param name="args"></param>
-        private static void Handler(object sender, object args)
+        /// <param name="e"></param>
+        void DoAction(object sender, RoutedEventArgs e)
         {
-            HandlerIntern(sender, args, "<CommandName>", "<asd>");
-        }
-
-        public static void HandlerIntern(object sender, object args, string cmdname, object cmdParams)
-        {
-            var fe = sender as FrameworkElement;
-            if (fe != null)
+            object obj = null;
+            var vm = (sender as FrameworkElement).DataContext;
+            if (BindingCommandPath != null)
             {
-                var vm = fe.DataContext;
-                if (vm != null)
+                var props = BindingCommandPath.Split('.');
+                foreach (var prop in props)
                 {
-                    var type = vm.GetType();
-                    var prop = type.GetProperty(cmdname);
-                    if (prop != null)
-                    {
-                        var cmd = prop.GetValue(vm) as ICommand;
-                        if ((cmd != null) && cmd.CanExecute(args))
-                        {
-                            cmd.Execute(args);
-                        }
-                    }
+                    var property = vm.GetType().GetProperty(prop);
+                    if (property != null)
+                        vm = property.GetValue(vm, null);
                     else
                     {
-                        MethodInfo methodInfo = type.GetMethod(cmdname, BindingFlags.Public | BindingFlags.Instance);
-                        if (methodInfo != null)
-                        {
-                            methodInfo.Invoke(vm, new[] { sender, args });
-                        }
+                        MethodInfo method = vm.GetType().GetMethod(prop, BindingFlags.Public | BindingFlags.Instance);
+                        if (method == null) throw new NotImplementedException("Класс расширения для событий может использоваться только с командами или методами");
+                        method.Invoke(vm, new[] { sender, e });
+                        return;
                     }
                 }
+                Command = vm as ICommand;
             }
+
+            Type eventArgsType = typeof(EventCommandArgs<>).MakeGenericType(_eventArgsType);
+            var cmdParams = Activator.CreateInstance(eventArgsType, sender, e);
+            if (Command != null && Command.CanExecute(cmdParams))
+                Command.Execute(cmdParams);
+
         }
-        #endregion
+
+     
     }
